@@ -1,0 +1,62 @@
+// 1. Load Kashmir AOI 
+var AOI = ee.FeatureCollection("projects/fresh-century-432117-j1/assets/District_boundary_kashmir11");
+Map.centerObject(AOI, 9);
+
+// Style AOI boundary for visualization
+var aoiStyle = AOI.style({
+  color: 'black',
+  fillColor: '00000000', // transparent fill
+  width: 2
+});
+Map.addLayer(aoiStyle, {}, 'Kashmir Boundary');
+
+// 2. Load ESA WorldCover Cropland Mask (Class 40)
+var worldCover = ee.ImageCollection("ESA/WorldCover/v100").first();
+var croplandMask = worldCover.eq(40); // Class 40 = cropland
+var maskedCrop = croplandMask.updateMask(croplandMask).clip(AOI);
+Map.addLayer(maskedCrop, {palette: ['white', 'green']}, 'Cropland in Kashmir');
+
+// 3. Load SMAP L3 Daily Surface Soil Moisture (AM)
+var smapCollection = ee.ImageCollection("NASA/SMAP/SPL3SMP_E/006")
+  .filterDate('2015-05-01', '2024-10-31') // May to Oct, 2015–2024
+  .filter(ee.Filter.calendarRange(5, 10, 'month')) // Filter by month
+  .select('soil_moisture_am'); // Morning overpass surface soil moisture
+
+print('SMAP Image Count (May–Oct, 2015–2024):', smapCollection.size());
+
+// 4. Calculate Mean Soil Moisture Over Time
+var meanSMAP = smapCollection
+  .mean()
+  .clip(AOI)
+  .updateMask(maskedCrop) // mask to cropland only
+  .rename('SoilMoisture');
+
+// 5. Compute Min & Max for Visualization (memory-safe)
+var smapStats = meanSMAP.reduceRegion({
+  reducer: ee.Reducer.minMax(),
+  geometry: AOI.geometry().simplify(10000), // simplify to reduce complexity
+  scale: 10000,  // SMAP is ~10 km resolution
+  bestEffort: true, // lets EE adjust scale if needed
+  maxPixels: 1e13
+});
+print('Soil Moisture min/max (m³/m³):', smapStats);
+
+// 6. Visualize SMAP Soil Moisture
+var smapVis = {
+  min: 0,
+  max: 0.5,
+  palette: ['yellow', 'orange', 'green', 'darkgreen', 'blue']
+};
+Map.addLayer(meanSMAP, smapVis, 'Mean SMAP Soil Moisture (May–Oct, 2015–2024)');
+
+// 7. Export Mean Soil Moisture Image to Google Drive
+Export.image.toDrive({
+  image: meanSMAP,
+  description: 'SMAP_SoilMoisture_Kashmir_2015_2024_MayOct',
+  folder: 'GEE_SMAP_Exports',
+  fileNamePrefix: 'SoilMoisture_Composite_MayOct',
+  region: AOI.geometry(),
+  scale: 10000,
+  crs: 'EPSG:4326',
+  maxPixels: 1e13
+});
