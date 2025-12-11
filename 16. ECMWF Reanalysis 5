@@ -1,0 +1,70 @@
+// Load Kashmir district boundaries
+var districts = ee.FeatureCollection("projects/fresh-century-432117-j1/assets/District_boundary_kashmir11");
+Map.centerObject(districts, 9);
+Map.addLayer(districts.style({color: 'black', fillColor: '00000000', width: 2}), {}, 'Kashmir Districts');
+
+//Load ESA WorldCover and mask croplands (Class 40)
+
+var worldCover = ee.ImageCollection("ESA/WorldCover/v100").first();
+var cropMask = worldCover.eq(40);  // 40 = cropland
+var cropland = cropMask.updateMask(cropMask).clip(districts);
+Map.addLayer(cropland, {min: 0, max: 1, palette: ['white', 'green']}, 'Cropland Mask');
+
+//Define time range and season (May to October)
+
+var startYear = 2005;
+var endYear = 2024;
+var targetMonths = [5, 6, 7, 8, 9, 10];  // May–October
+
+// Load ERA5 temperature and convert from Kelvin to Celsius
+var era5 = ee.ImageCollection("ECMWF/ERA5/MONTHLY")
+  .filter(ee.Filter.calendarRange(startYear, endYear, 'year'))
+  .filter(ee.Filter.inList('month', targetMonths))
+  .select('mean_2m_air_temperature');
+
+// Convert from Kelvin to Celsius
+var tempCelsius = era5.map(function(img) {
+  return img
+    .subtract(273.15)
+    .copyProperties(img, img.propertyNames());
+});
+
+// Compute average May–Oct temperature (°C) over 2005–2024
+var meanTempC = tempCelsius.mean()
+  .updateMask(cropMask)
+  .clip(districts)
+  .rename('ERA5_Temp_C');
+
+
+// Visualize in the map viewer
+
+Map.addLayer(meanTempC, {
+  min: 10,
+  max: 35,
+  palette: ['red', 'lightyellow', 'orange']
+}, 'Mean Air Temp (°C, 2005–2024, May–Oct)');
+
+
+//Print Min and Max temperature over cropland to the console
+
+var stats = meanTempC.reduceRegion({
+  reducer: ee.Reducer.minMax(),
+  geometry: districts.geometry(),
+  scale: 5000,
+  maxPixels: 1e13
+});
+print('Min/Max Air Temperature (°C) over Cropland:', stats);
+
+
+//Export as GeoTIFF to Google Drive
+
+Export.image.toDrive({
+  image: meanTempC,
+  description: 'ERA5_Temp_C_2005_2024_Kashmir_Cropland',
+  folder: 'Crop_Yield_ERA5',
+  fileNamePrefix: 'ERA5_Temp_Cropland_2005_2024',
+  region: districts.geometry(),
+  scale: 5000,
+  crs: 'EPSG:4326',
+  maxPixels: 1e13
+});
