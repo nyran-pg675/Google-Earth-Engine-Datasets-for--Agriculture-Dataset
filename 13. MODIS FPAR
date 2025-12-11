@@ -1,0 +1,67 @@
+// 1. Load AOI (Kashmir Districts)
+var AOI = add your shapefile
+Map.centerObject(AOI, 9);
+
+// Visualize AOI boundary
+var aoiStyle = AOI.style({
+  color: 'black',
+  fillColor: '00000000',
+  width: 2
+});
+Map.addLayer(aoiStyle, {}, 'Kashmir Boundary');
+
+// 2. Load Cropland Mask using updateMask (class 40)
+var worldCover = ee.ImageCollection("ESA/WorldCover/v100").first();
+var croplandMask = worldCover.eq(40).clip(AOI);  // clip to AOI
+var MaskedCrop = croplandMask.updateMask(croplandMask);
+Map.addLayer(MaskedCrop, {palette: ['white','green']}, 'Cropland Only in Kashmir');
+
+// 3. Load & Filter MODIS FPAR (May–Oct, 2005–2024) with QA mask
+var fparCollection = ee.ImageCollection("MODIS/061/MOD15A2H")
+  .filter(ee.Filter.calendarRange(2005, 2024, 'year'))
+  .filter(ee.Filter.calendarRange(5, 10, 'month'))
+  .map(function(img) {
+    var fpar = img.select('Fpar_500m').multiply(0.01).toFloat(); // Apply scale
+    var qa = img.select('FparLai_QC');
+    var qaMask = qa.bitwiseAnd(3).eq(0);  // QA mask
+    return fpar.updateMask(qaMask).copyProperties(img, img.propertyNames());
+  });
+
+// Print image count
+print('Filtered FPAR image count (May–Oct, 2005–2024):', fparCollection.size());
+
+// 4. Create Mean Composite and apply cropland mask + clip to AOI
+var compositeFPAR = fparCollection
+  .mean()
+  .clip(AOI)                 // Clip first to reduce surrounding
+  .updateMask(croplandMask) // Apply cropland mask
+  .rename('FPAR_mean');
+
+// 5. Compute and Print Statistics within Kashmir AOI
+var stats = compositeFPAR.reduceRegion({
+  reducer: ee.Reducer.minMax(),
+  geometry: AOI,
+  scale: 500,
+  maxPixels: 1e13
+});
+print('FPAR min/max values:', stats);
+
+// 6. Visualization Parameters
+var fparVis = {
+  min: 0,
+  max: 1,
+  palette: ['white', 'lightgreen', 'green', 'darkgreen']
+};
+Map.addLayer(compositeFPAR, fparVis, 'Composite FPAR (2005–2024, May–Oct)');
+
+// 7. Export FPAR Composite to Google Drive
+Export.image.toDrive({
+  image: compositeFPAR,
+  description: 'Corrected_FPAR_2005_2024_May_Oct',
+  folder: 'GEE_FPAR_Exports',
+  fileNamePrefix: 'Corrected_FPAR_Composite_May_Oct',
+  region: AOI.geometry(),
+  scale: 500,
+  crs: 'EPSG:4326',
+  maxPixels: 1e13
+});
