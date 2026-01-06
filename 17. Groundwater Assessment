@@ -1,0 +1,194 @@
+
+// 1. Load Eastern Highlands Boundary (PNG)
+
+var provinces = ee.FeatureCollection('projects/fresh-century-432117-j1/assets/gadm41_PNG_1_Provincal_level');
+var easternHighlands = provinces.filter(ee.Filter.eq('NAME_1', 'Hela'));
+
+Map.centerObject(easternHighlands, 9);
+Map.addLayer(easternHighlands, {color: 'black'}, 'Hela Province');
+
+// Title Panel
+var title = ui.Label({
+  value: 'Groundwater Assessment – Hela Province, PNG',
+  style: {
+    fontWeight: 'bold',
+    fontSize: '20px',
+    color: 'black',
+    padding: '8px',
+    margin: '10px 0 0 10px'
+  }
+});
+
+var titlePanel = ui.Panel({
+  widgets: [title],
+  style: {
+    position: 'top-center',
+    backgroundColor: 'rgba(255, 255, 255, 0.8)'
+  }
+});
+Map.add(titlePanel);
+
+// Draw border
+var border = ee.Image().byte().paint({
+  featureCollection: easternHighlands,
+  color: 1,
+  width: 3
+});
+Map.addLayer(border, {palette: ['black']}, 'Province Border');
+
+
+// 2. Define points inside Eastern Highlands
+
+var points = ee.FeatureCollection([
+  geometry, // North
+  geometry2, // South
+  geometry3, // East
+  geometry4  // West
+]);
+
+Map.addLayer(points, {color: 'red'}, 'Monitoring Points');
+
+// 3. Set time range for GLDAS groundwater data
+
+var startDate = ee.Date('2003-01-01');
+var endDate = ee.Date('2024-01-01');
+var timeDifference = endDate.difference(startDate, 'month').round();
+print('Total Months:', timeDifference);
+
+// 4. Load GLDAS groundwater storage data
+
+var groundwaterData = ee.ImageCollection("NASA/GLDAS/V022/CLSM/G025/DA1D")
+  .select('GWS_tavg')
+  .filterDate(startDate, endDate);
+
+
+// 5. Generate monthly composites
+
+var dateList = ee.List.sequence(0, timeDifference.subtract(1), 1).map(function(delta) {
+  var start = ee.Date(startDate).advance(delta, 'month');
+  var end = start.advance(1, 'month');
+  var monthlyAvg = groundwaterData.filterDate(start, end).mean().rename('Groundwater');
+  var bandCount = monthlyAvg.bandNames().size();
+
+  return monthlyAvg
+    .set('system:time_start', start.millis())
+    .set('system:time_end', end.millis())
+    .set('system:index', start.format('YYYY-MM-dd'))
+    .set('num_bands', bandCount);
+}).filter(ee.Filter.gt('num_bands', 0));
+
+var monthlyGW = ee.ImageCollection(dateList);
+
+
+// 6. Time Series: Eastern Highlands Overall
+
+var provinceChart = ui.Chart.image.series({
+  imageCollection: monthlyGW,
+  region: easternHighlands,
+  reducer: ee.Reducer.mean(),
+  scale: 27000,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Mean Groundwater Storage - Hela Province',
+  hAxis: {title: 'Time'},
+  vAxis: {title: 'GWS_tavg (m)'},
+  colors: ['blue']
+});
+print(provinceChart);
+
+//-------------------------------------------
+// 7. Time Series: Monitoring Points
+//-------------------------------------------
+var pointsChart = ui.Chart.image.seriesByRegion({
+  imageCollection: monthlyGW,
+  regions: points,
+  reducer: ee.Reducer.first(),
+  band: 'Groundwater',
+  scale: 27000,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Groundwater Storage - Monitoring Points (Hela Province)',
+  hAxis: {title: 'Time'},
+  vAxis: {title: 'GWS_tavg (m)'},
+  colors: ['green', 'orange', 'purple', 'brown']
+});
+print(pointsChart);
+
+
+// 8. Visualize median groundwater for Province
+
+var groundwaterVis = {
+  min: -1,
+  max: 1,
+  palette: ['brown', 'yellow', 'cyan', 'blue']
+};
+
+Map.addLayer(monthlyGW.median().clip(easternHighlands), groundwaterVis, 'Median Groundwater (2003–2024)');
+
+
+// 9. Add Colorbar Legend
+
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-left',
+    padding: '8px 15px',
+    backgroundColor: 'rgba(255,255,255,0.8)'
+  }
+});
+
+legend.add(ui.Label({
+  value: 'Groundwater Storage Anomaly',
+  style: {fontWeight: 'bold', fontSize: '16px', margin: '0 0 4px 0'}
+}));
+
+var makeColorBar = function(palette) {
+  return ui.Thumbnail({
+    image: ee.Image.pixelLonLat().select(0),
+    params: {
+      bbox: [0, 0, 1, 0.1],
+      dimensions: '100x10',
+      format: 'png',
+      min: 0,
+      max: 1,
+      palette: palette
+    },
+    style: {
+      stretch: 'horizontal',
+      margin: '0px 8px',
+      maxHeight: '30px'
+    }
+  });
+};
+legend.add(makeColorBar(groundwaterVis.palette));
+
+var legendLabels = ui.Panel({
+  widgets: [
+    ui.Label('Low', {fontSize: '12px'}),
+    ui.Label('Normal', {fontSize: '12px', textAlign: 'center', stretch: 'horizontal'}),
+    ui.Label('High', {fontSize: '12px'})
+  ],
+  layout: ui.Panel.Layout.flow('horizontal')
+});
+legend.add(legendLabels);
+Map.add(legend);
+
+
+// 10. Export the groundwater multi-band image
+
+Export.image.toDrive({
+  image: monthlyGW.toBands().clip(easternHighlands),
+  description: 'EasternHighlands_Groundwater_2003_2024',
+  scale: 27000,
+  region: easternHighlands.geometry(),
+  crs: 'EPSG:4326',
+  maxPixels: 1e13,
+  folder: 'EasternHighlands_GW_Data'
+});
+
+// 11. Export Monitoring Points as Shapefile
+
+Export.table.toDrive({
+  collection: points,
+  description: 'EasternHighlands_Monitoring_Points',
+  fileFormat: 'SHP'
+});
